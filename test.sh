@@ -1,0 +1,41 @@
+#!/bin/bash
+
+python -O -m exp.exp_on_molecule \
+  --dataset ZINC \
+  --task_type regression \
+  --eval_metric mae \
+  --minimize \
+  --lr_scheduler 'ReduceLROnPlateau' \
+  --lr_scheduler_patience 20 \
+  --early_stop \
+  --start_seed 0 \
+  --stop_seed 0 \
+  --train_eval_period 20 \
+  --epochs 1000 \
+  --batch_size 128 \
+  --init_method sum \
+  --nonlinearity relu \
+  --graph_norm bn \
+  --readout sum \
+  --dump_curves \
+  --preproc_jobs 32 \
+  --num_workers 2 \
+  --max_dim 2 \
+  --max_ring_size 18 \
+  --use_edge_features \
+  --use_coboundaries True \
+  --exp_name Test \
+  --device 0 \
+  --model gcnc \
+  --emb_dim 32 \
+  --num_layers 4 \
+  --lr 0.001 \
+  --drop_rate 0.0 \
+  --weight_decay 0.0005 \
+  --final_readout cat \
+  --mp_cal mlpv2 \
+  --mp_act tanh \
+  --agg_kq 2 \
+  --pool_cal diff \
+  --pool_act tanh
+  
