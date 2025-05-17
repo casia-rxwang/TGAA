@@ -29,9 +29,8 @@ import collections.abc as container_abcs
 from torch.utils.data.dataloader import default_collate
 from torch_geometric.data import Data, Batch
 
-from definitions import ROOT_DIR
 from data.complex import Cochain, CochainBatch, Complex, ComplexBatch
-from data.datasets import load_sr_graph_dataset, load_tu_graph_dataset, load_zinc_graph_dataset, load_ogb_graph_dataset
+from data.datasets import load_sr_graph_dataset, load_tu_graph_dataset, load_zinc_graph_dataset, load_ogb_graph_dataset, load_expwl1_graph_dataset
 from data.datasets import SRDataset, TUDataset, ComplexDataset, ZincDataset, CSLDataset, OGBDataset
 
 
@@ -42,6 +41,7 @@ class Collater(object):
         follow_batch: Creates assignment batch vectors for each key in the list.
         max_dim: The maximum dimension of the cochains considered from the supplied list.
     """
+
     def __init__(self, follow_batch, max_dim=2):
         self.follow_batch = follow_batch
         self.max_dim = max_dim
@@ -90,6 +90,7 @@ class DataLoader(torch.utils.data.DataLoader):
         max_dim (int): The maximum dimension of the chains to be used in the batch.
             (default: 2)
     """
+
     def __init__(self, dataset, batch_size=1, shuffle=False, follow_batch=[], max_dim=2, **kwargs):
 
         if "collate_fn" in kwargs:
@@ -102,7 +103,7 @@ class DataLoader(torch.utils.data.DataLoader):
 
 
 def load_dataset(name,
-                 root=os.path.join(ROOT_DIR, 'datasets'),
+                 root,
                  max_dim=2,
                  fold=0,
                  init_method='sum',
@@ -228,7 +229,7 @@ def load_dataset(name,
     return dataset
 
 
-def load_graph_dataset(name, root=os.path.join(ROOT_DIR, 'datasets'), fold=0, **kwargs):
+def load_graph_dataset(name, root, fold=0, **kwargs):
     """Returns a graph dataset with the specified name and initialised with the given params."""
     if name.startswith('sr'):
         graph_list, train_ids, val_ids, test_ids = load_sr_graph_dataset(name, root=root)
@@ -294,6 +295,9 @@ def load_graph_dataset(name, root=os.path.join(ROOT_DIR, 'datasets'), fold=0, **
     elif name == 'ZINC-FULL':
         graph_list, train_ids, val_ids, test_ids = load_zinc_graph_dataset(root=root, subset=False)
         data = (graph_list, train_ids, val_ids, test_ids, 1)
+    elif name == 'EXPWL1':
+        graph_list, train_ids, val_ids, test_ids = load_expwl1_graph_dataset(root=root)
+        data = (graph_list, train_ids, val_ids, test_ids, graph_list.num_tasks)
     elif name in [
             'MOLHIV', 'MOLPCBA', 'MOLTOX21', 'MOLTOXCAST', 'MOLMUV', 'MOLBACE', 'MOLBBBP', 'MOLCLINTOX', 'MOLSIDER', 'MOLESOL',
             'MOLFREESOLV', 'MOLLIPO', 'PPA', 'CODE2'

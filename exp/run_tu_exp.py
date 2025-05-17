@@ -1,7 +1,6 @@
 import sys
 import os
 import copy
-import time
 import numpy as np
 from exp.parser import get_parser
 from exp.run_exp import main
@@ -65,13 +64,11 @@ def exp_main(passed_args):
            '-------------------------------\n')
     print(msg)
 
-    if args.exp_mode == 'eval':
-        # not save results
-        return
+    suffix = 'result_eval.txt' if args.exp_mode == 'eval' else 'result.txt'
 
     # additionally write msg and configuration on file
     msg += str(args)
-    filename = os.path.join(args.result_folder, f'{args.dataset}-{args.exp_name}/result.txt')
+    filename = os.path.join(args.result_folder, f'{args.dataset}', f'{args.exp_name}', suffix)
     print('Writing results at: {}'.format(filename))
     with open(filename, 'w') as handle:
         handle.write(msg)

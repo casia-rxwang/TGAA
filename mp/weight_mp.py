@@ -1,201 +1,146 @@
 import torch
 import torch.nn.functional as F
-from torch import Tensor
-from torch.nn import Linear
-from torch_geometric.nn.inits import glorot
+from torch.nn import Linear, Sequential, Parameter
+from typing import Callable
+from torch_scatter import scatter
 
 
 class Origin(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, mp_agg='sum'):
         super(Origin, self).__init__()
+        self.reduce = mp_agg if mp_agg in ['sum', 'mean', 'max'] else 'sum'
 
-    def forward(self, x_i, x_j, e_ij):
-        return x_i.new_ones(x_i.size()[:-1] + (1, ))
-
-
-class Cosine_Similarity(torch.nn.Module):
-    def __init__(self, in_size, dim_coff, agg_q, agg_k):
-        super(Cosine_Similarity, self).__init__()
-        self.lin = dot_product(in_size * dim_coff)
-        self.agg_q = agg_q
-        self.agg_k = agg_k
-
-    def forward(self, x_i, x_j, e_ij):
-        q = self.agg_q((x_j, e_ij))
-        k = self.agg_k((x_i, x_i))
-        w = F.cosine_similarity(self.lin(q), k).view(-1, 1)
-        return w
+    def forward(self, msg, x_i, x_j, e_ij, index, num_nodes, dim=0):
+        return scatter(msg, index, dim, dim_size=num_nodes, reduce=self.reduce)
 
 
 class Gate(torch.nn.Module):
-    def __init__(self, in_size, dim_coff, agg_q, out_size):
+    def __init__(self, in_size, agg_q):
         super(Gate, self).__init__()
-        self.lin = Linear(in_size * dim_coff, out_size, bias=True)
+        self.lin = Linear(in_size, 1, bias=True)
         self.agg_q = agg_q
 
-    def forward(self, x_i, x_j, e_ij):
+    def forward(self, msg, x_i, x_j, e_ij, index, num_nodes, dim=0):
         q = self.agg_q((x_j, e_ij))
         w = torch.tanh(self.lin(torch.cat([q, x_i], dim=-1)))
-        return w
+
+        return scatter(torch.mul(w, msg), index, dim, dim_size=num_nodes, reduce='sum')
 
 
 class GateV2(torch.nn.Module):
-    def __init__(self, in_size, dim_coff, agg_q, out_size, hidden):
+    def __init__(self, in_size, hidden, agg_q):
         super(GateV2, self).__init__()
-        self.lin1 = Linear(in_size * dim_coff, hidden, bias=True)
-        self.lin2 = Linear(hidden, out_size, bias=True)
+        self.lin1 = Linear(in_size, hidden, bias=True)
+        self.lin2 = Linear(hidden, 1, bias=True)
         self.agg_q = agg_q
 
-    def forward(self, x_i, x_j, e_ij):
+    def forward(self, msg, x_i, x_j, e_ij, index, num_nodes, dim=0):
         q = self.agg_q((x_j, e_ij))
         w = torch.tanh(self.lin2(F.leaky_relu(self.lin1(torch.cat([q, x_i], dim=-1)))))
-        return w
 
-
-class Multiply(torch.nn.Module):
-    def __init__(self, in_size, dim_coff, agg_q):
-        super(Multiply, self).__init__()
-        self.lin = Linear(in_size * dim_coff, in_size, bias=False)
-        self.agg_q = agg_q
-
-    def forward(self, x_i, x_j, e_ij):
-        q = self.agg_q((x_j, e_ij))
-        w = torch.mul(self.lin(q), x_i).sum(dim=1, keepdim=True)
-        w = torch.tanh(w)
-        return w
-
-
-class Multiply_C(torch.nn.Module):
-    def __init__(self, in_size, dim_coff, agg_q):
-        super(Multiply_C, self).__init__()
-        self.lin = Linear(in_size * dim_coff, in_size, bias=False)
-        self.agg_q = agg_q
-
-    def forward(self, x_i, x_j, e_ij):
-        q = self.agg_q((x_j, e_ij))
-        w = torch.mul(self.lin(q), x_i)
-        w = torch.tanh(w)
-        return w
+        return scatter(torch.mul(w, msg), index, dim, dim_size=num_nodes, reduce='sum')
 
 
 class Attention(torch.nn.Module):
-    '''GAT'''
-    def __init__(self, in_size, dim_coff, agg_q, out_size):
+    def __init__(self, in_size, agg_q):
         super(Attention, self).__init__()
-        self.lin = Linear(in_size * dim_coff, out_size, bias=True)
+        self.lin = Linear(in_size, 1, bias=True)
         self.agg_q = agg_q
 
-    def forward(self, x_i, x_j, e_ij, adj, e_idx):
-        '''
-        adj: Tensor [N, N]
-        e_idx: Tuple (Tensor, Tensor)
-        '''
+    def forward(self, msg, x_i, x_j, e_ij, index, num_nodes, dim=0):
+        # torch_geometric.utils.softmax
+        # index: target node idx
         q = self.agg_q((x_j, e_ij))
+        src = torch.tanh(self.lin(torch.cat([q, x_i], dim=-1)))
 
-        w = torch.tanh(self.lin(torch.cat([q, x_i], dim=-1)))
-        dense_att = w.new_full(adj.size() + w.size()[-1:], fill_value=-9e15)  # b,n_target,n_source,f
-        dense_att[e_idx] = w
-        dense_att = F.softmax(dense_att, dim=-2)
-        w = dense_att[e_idx]
+        src_max = scatter(src.detach(), index, dim, dim_size=num_nodes, reduce='max')
+        out = src - src_max.index_select(dim, index)
+        out = out.exp()
+        out_sum = scatter(out, index, dim, dim_size=num_nodes, reduce='sum') + 1e-16
+        out_sum = out_sum.index_select(dim, index)
 
-        return w
-
-
-def create_fb_weight(in_size, args, agg_qk=-1):
-    # 0: q=x_j, k=x; 1: q=e_ij, k=x; 2: q=x_j||e_ij, k=x||x
-    if agg_qk == -1:
-        agg_qk = args.agg_qk
-    if agg_qk == 2:
-        agg_k = lambda xs: torch.cat(xs[:2], dim=-1)
-        agg_q = lambda xs: torch.cat(xs[:2], dim=-1)
-    elif agg_qk == 1:
-        agg_k = lambda xs: xs[0]
-        agg_q = lambda xs: xs[1]
-    else:
-        agg_k = lambda xs: xs[0]
-        agg_q = lambda xs: xs[0]
-
-    dim_coff = max(1, agg_qk)
-    out_size = in_size if args.mp_channel else 1
-
-    mp_cal = args.mp_cal
-    if mp_cal == 'cosine':
-        return Cosine_Similarity(in_size, dim_coff, agg_k, agg_q)
-    elif mp_cal == 'mlp':
-        return Gate(in_size, dim_coff + 1, agg_q, out_size)
-    elif mp_cal == 'mlpv2':
-        return GateV2(in_size, dim_coff + 1, agg_q, out_size, args.mlpv2_hidden)
-    elif mp_cal == 'mul':
-        if args.mp_channel:
-            return Multiply_C(in_size, dim_coff, agg_q)
-        else:
-            return Multiply(in_size, dim_coff, agg_q)
-    else:
-        return Origin()
+        w = out / out_sum
+        return scatter(torch.mul(w, msg), index, dim, dim_size=num_nodes, reduce='sum')
 
 
-def mean_d_i(w: Tensor):
-    '''GraphSage'''
-    return w / (w.sum(dim=-1, keepdim=True) + 1e-6)
+class Label_Histogram(torch.nn.Module):
+    def __init__(self, in_size: int, out_size: int, num_cluster: int, agg_q: Callable, heads: int = 1, gamma: float = 1., tau: float = 10.):
+        super(Label_Histogram, self).__init__()
+        self.in_size = in_size
+        self.out_size = out_size
+        self.num_cluster = num_cluster
+        self.heads = heads
+        self.gamma = gamma
+        self.tau = tau
 
+        self.k = Parameter(torch.empty(heads, num_cluster, in_size))
+        # self.lin = Linear(heads, 1, bias=True)
+        self.trans = Sequential(Linear(num_cluster * out_size, out_size), torch.nn.LeakyReLU())
+        self.agg_q = agg_q
 
-def sqrt_d_ij(w: Tensor):
-    '''GCN'''
-    d_i = w.sum(dim=-1, keepdim=True)
-    d_j = w.sum(dim=-2, keepdim=True)
-    return w / (torch.sqrt(torch.mul(d_i, d_j)) + 1e-6)
-
-
-def create_sb_weight(sb_cal):
-    if sb_cal == 'mean':
-        return mean_d_i
-    elif sb_cal == 'degree':
-        return sqrt_d_ij
-    else:
-        return lambda x: x
-
-
-class chebyshev_ploy(torch.nn.Module):
-    def __init__(self, K, channels=1):
-        super(chebyshev_ploy, self).__init__()
-
-        assert K > 1, "\n!! K < 2 in chebyshev_ploy."
-        self.lins = torch.nn.ModuleList([dot_product(channels) for _ in range(K)])
         self.reset_parameters()
 
     def reset_parameters(self):
-        for lin in self.lins:
-            lin.reset_parameters()
+        torch.nn.init.xavier_uniform_(self.k.data)
+        # self.lin.reset_parameters()
 
-    def forward(self, x: Tensor):
-        '''
-        x: (*, in_channels)
-        out: (*, out_channels)
-        '''
-        Tx_0 = x * 0 + 1.0
-        Tx_1 = x
-        out = self.lins[0](Tx_0) + self.lins[1](Tx_1)
+    def forward(self, msg, x_i, x_j, e_ij, index, num_nodes, dim=0):
+        x = self.agg_q((x_j, e_ij))
+        D_ = self.out_size
+        N, H, K, D = x.size(0), self.heads, self.num_cluster, self.in_size
 
-        for lin in self.lins[2:]:
-            Tx_2 = 2. * torch.mul(Tx_1, x) - Tx_0
-            out = out + lin(Tx_2)
-            Tx_0, Tx_1 = Tx_1, Tx_2
+        dist = torch.cdist(self.k.view(H * K, D), x, p=2)**2
+        dist = (1. + dist / self.gamma).pow(-(self.gamma + 1.0) / 2.0)
 
-        return out
+        dist = dist.view(H, K, N).permute(2, 1, 0)  # [N, K, H]
+
+        # w = dist / dist.sum(dim=-2, keepdim=True)
+        # w = self.lin(w).squeeze(dim=-1).softmax(dim=-1)
+        w = dist / dist.sum(dim=-2, keepdim=True) * self.tau
+        w = w.mean(dim=-1, keepdim=False).softmax(dim=-1)  # [N, K]
+
+        new_msg = torch.mul(w.unsqueeze(dim=-1), msg.unsqueeze(dim=-2)).view(N, K * D_)  # [N, KD]
+        agg_msg = scatter(new_msg, index, dim, dim_size=num_nodes, reduce='sum')  # [B, KD]
+        return self.trans(agg_msg)  # [B, D]
 
 
-class dot_product(torch.nn.Module):
-    def __init__(self, channels):
-        super(dot_product, self).__init__()
-        self.coffs = torch.nn.Parameter(torch.ones(1, channels))
-        self.reset_parameters()
+class MLP(torch.nn.Module):
+    def __init__(self, in_size: int, out_size: int, num_cluster: int, agg_q: Callable):
+        super(MLP, self).__init__()
+        self.lin = Linear(out_size, num_cluster * out_size)
+        self.trans = Sequential(Linear(num_cluster * out_size, out_size), torch.nn.LeakyReLU())
+        self.agg_q = agg_q
 
-    def reset_parameters(self):
-        glorot(self.coffs)
+    def forward(self, msg, x_i, x_j, e_ij, index, num_nodes, dim=0):
+        new_msg = self.lin(msg)
+        agg_msg = scatter(new_msg, index, dim, dim_size=num_nodes, reduce='sum')
+        return self.trans(agg_msg)
 
-    def forward(self, x: Tensor):
-        '''
-        x: (*, channels)
-        out: (*, channels)
-        '''
-        return torch.mul(self.coffs, x)
+
+def create_mp_weight(hidden, args, depth):
+    mp_agg = args.mp_agg
+    K = args.mp_clusters
+
+    # 0: q=x_j; 1: q=e_ij; 2: q=x_j||e_ij
+    if args.agg_qk in [0, 1]:
+        in_size = hidden
+        def agg_q(xs): return xs[args.agg_qk]
+    else:
+        in_size = hidden * 2
+        def agg_q(xs): return torch.cat(xs[:2], dim=-1)
+
+    if depth < args.mp_agg_depth:
+        return Origin(mp_agg=mp_agg)  # extra switch
+
+    if mp_agg == 'gate':
+        return Gate(hidden + in_size, agg_q)
+    elif mp_agg == 'gatev2':
+        return GateV2(hidden + in_size, args.gatev2_hidden, agg_q)
+    elif mp_agg == 'att':
+        return Attention(hidden + in_size, agg_q)
+    elif mp_agg == 'lha' and K > 1 and depth == args.num_layers:
+        return Label_Histogram(in_size, hidden, K, agg_q, gamma=args.gamma, tau=args.tau)
+    elif mp_agg == 'mlp' and K > 1 and depth == args.num_layers:
+        return MLP(in_size, hidden, K, agg_q)
+    else:
+        return Origin(mp_agg=mp_agg)

@@ -1,12 +1,10 @@
-import os
 import time
 import argparse
-
-from definitions import ROOT_DIR
 
 
 def get_parser():
     parser = argparse.ArgumentParser(description='CWN experiment.')
+    parser.add_argument('--data_root', type=str, default='../datasets', help='path for data')
     parser.add_argument('--seed', type=int, default=43, help='random seed to set (default: 43, i.e. the non-meaning of life))')
     parser.add_argument('--start_seed', type=int, default=0, help='The initial seed when evaluating on multiple seeds.')
     parser.add_argument('--stop_seed', type=int, default=9, help='The final seed when evaluating on multiple seeds.')
@@ -70,10 +68,9 @@ def get_parser():
                         type=int,
                         default=None,
                         help='maximum ring size to look for (default: None, i.e. do not look for rings)')
-    parser.add_argument('--result_folder', type=str, default=os.path.join(ROOT_DIR, 'results'), help='path for output result')
+    parser.add_argument('--result_folder', type=str, default='results', help='path for output result')
     parser.add_argument('--exp_name', type=str, default=str(time.time()),
-                        help='name for specific experiment; if not provided, a name based on unix timestamp will be '+\
-                        'used. (default: None)')
+                        help='name for specific experiment; if not provided, a name based on unix timestamp will be used. (default: None)')
     parser.add_argument('--dump_curves', action='store_true', help='whether to dump the training curves to disk')
     parser.add_argument('--untrained', action='store_true', help='whether to skip training')
     parser.add_argument('--fold', type=int, default=None, help='fold index for k-fold cross-validation experiments')
@@ -94,22 +91,27 @@ def get_parser():
                         help='Jobs to use for the dataset preprocessing. For all jobs use "-1".'
                         'For sequential processing (no parallelism) use "1"')
     # exp
-    parser.add_argument('--data_type', type=str, default='complex', help='graph, complex')
+    parser.add_argument('--data_type', type=str, default='graph', help='graph, complex')
     parser.add_argument('--exp_mode', type=str, default='train', help='train, eval, resume')
     parser.add_argument('--load_model', type=str, default='last', help='last, best')
     parser.add_argument('--recover_best', action='store_true', help='load state_dict from best epoch when reduce learning rate')
-    # mp weight and pool weight
-    parser.add_argument('--sb_cal', type=str, default='sum', help='mean, degree, sum')
-    parser.add_argument('--mp_cal', type=str, default='none', help='cosine, mlp, mlpv2, mul, none')
-    parser.add_argument('--mp_channel', action='store_true', help='use channel-wise weight for mp')
-    parser.add_argument('--agg_qk', type=int, default=0, help='0: q=x_j, k=x; 1: q=e_ij, k=x; 2: q=x_j||e_ij, k=x||x')
-    parser.add_argument('--mlpv2_hidden', type=int, default=8, help='hidden dimension of mlpv2')
-    parser.add_argument('--pool_cal', type=str, default='none', help='cosine, mlp, diff, mul, none')
-    parser.add_argument('--pool_channel', action='store_true', help='use channel-wise weight for pool')
+    # input cluster and readout cluster
+    parser.add_argument('--cluster_nums', type=int, nargs='*', default=(8, ), help='num of clusters at each level')
+    parser.add_argument('--cluster_method', type=str, default='random', help='random, none')
+    # mp weight and ro weight
+    parser.add_argument('--ro_agg', type=str, default='sum', help='ro_agg')
+    parser.add_argument('--ro_clusters', type=int, nargs='+', default=(4, 4, 2), help='ro_clusters')
+    parser.add_argument('--mp_agg', type=str, default='sum', help='mp_agg')
+    parser.add_argument('--mp_clusters', type=int, default=2, help='mp_clusters')
+    parser.add_argument('--mp_agg_depth', type=int, default=0, help='the depth (1-N) to start mp_agg')
+    parser.add_argument('--agg_qk', type=int, default=0, help='0: q=x_j; 1: q=e_ij; 2: q=x_j||e_ij')
+    parser.add_argument('--gatev2_hidden', type=int, default=8, help='hidden dimension of gatev2')
     # others
     parser.add_argument('--layer_drop', type=float, default=0.0, help='layer_drop')
     parser.add_argument('--weight_decay', type=float, default=0.0, help='weight_decay')
     parser.add_argument('--train_eps', action='store_true', help='eps in GIN')
+    parser.add_argument('--tau', type=float, default=10.0, help='temperature')
+    parser.add_argument('--gamma', type=float, default=1.0, help='degree of freedom')
     return parser
 
 

@@ -6,7 +6,6 @@ from data.sr_utils import load_sr_dataset
 from data.utils import compute_clique_complex_with_gudhi, compute_ring_2complex
 from data.utils import convert_graph_dataset_with_rings, convert_graph_dataset_with_gudhi
 from data.datasets import InMemoryComplexDataset
-from definitions import ROOT_DIR
 from torch_geometric.data import Data
 
 import os.path as osp
@@ -21,7 +20,7 @@ def makedirs(path):
             raise e
 
 
-def load_sr_graph_dataset(name, root=os.path.join(ROOT_DIR, 'datasets'), prefer_pkl=False):
+def load_sr_graph_dataset(name, root, prefer_pkl=False):
     raw_dir = os.path.join(root, 'SR_graphs', 'raw')
     load_from = os.path.join(raw_dir, '{}.g6'.format(name))
     load_from_pkl = os.path.join(raw_dir, '{}.pkl'.format(name))
@@ -36,7 +35,7 @@ def load_sr_graph_dataset(name, root=os.path.join(ROOT_DIR, 'datasets'), prefer_
         edge_index, num_nodes = datum
         x = torch.ones(num_nodes, 1, dtype=torch.float32)
         graph = Data(x=x, edge_index=edge_index, y=None, edge_attr=None, num_nodes=num_nodes)
-        graphs.append(graph) 
+        graphs.append(graph)
     train_ids = list(range(len(graphs)))
     val_ids = list(range(len(graphs)))
     test_ids = list(range(len(graphs)))
@@ -46,7 +45,7 @@ def load_sr_graph_dataset(name, root=os.path.join(ROOT_DIR, 'datasets'), prefer_
 class SRDataset(InMemoryComplexDataset):
     """A dataset of complexes obtained by lifting Strongly Regular graphs."""
 
-    def __init__(self, root, name, max_dim=2, num_classes=16, train_ids=None, val_ids=None, test_ids=None, 
+    def __init__(self, root, name, max_dim=2, num_classes=16, train_ids=None, val_ids=None, test_ids=None,
                  include_down_adj=False, max_ring_size=None, n_jobs=2, init_method='sum'):
         self.name = name
         self._num_classes = num_classes
@@ -57,14 +56,14 @@ class SRDataset(InMemoryComplexDataset):
         if cellular:
             assert max_dim == 2
         super(SRDataset, self).__init__(root, max_dim=max_dim, num_classes=num_classes,
-            include_down_adj=include_down_adj, cellular=cellular, init_method=init_method)
-        
+                                        include_down_adj=include_down_adj, cellular=cellular, init_method=init_method)
+
         self.data, self.slices = torch.load(self.processed_paths[0])
-            
+
         self.train_ids = list(range(self.len())) if train_ids is None else train_ids
         self.val_ids = list(range(self.len())) if val_ids is None else val_ids
         self.test_ids = list(range(self.len())) if test_ids is None else test_ids
-        
+
     @property
     def processed_dir(self):
         """This is overwritten, so the cellular complex data is placed in another folder"""
@@ -75,11 +74,11 @@ class SRDataset(InMemoryComplexDataset):
 
     @property
     def processed_file_names(self):
-        return ['{}_complex_list.pt'.format(self.name)]       
+        return ['{}_complex_list.pt'.format(self.name)]
 
     def process(self):
-        
-        graphs, _, _, _ = load_sr_graph_dataset(self.name, prefer_pkl=True)
+
+        graphs, _, _, _ = load_sr_graph_dataset(self.name, self.root, prefer_pkl=True)
         exp_dim = self.max_dim
         if self._cellular:
             print(f"Converting the {self.name} dataset to a cell complex...")
@@ -95,16 +94,16 @@ class SRDataset(InMemoryComplexDataset):
             print(f"Converting the {self.name} dataset with gudhi...")
             complexes, max_dim, num_features = convert_graph_dataset_with_gudhi(
                 graphs,
-                expansion_dim=exp_dim,                                               
-                include_down_adj=self.include_down_adj,                    
+                expansion_dim=exp_dim,
+                include_down_adj=self.include_down_adj,
                 init_method=self._init_method)
-        
+
         if self._max_ring_size is not None:
             assert max_dim <= 2
         if max_dim != self.max_dim:
             self.max_dim = max_dim
             makedirs(self.processed_dir)
-        
+
         # Now we save in opt format.
         path = self.processed_paths[0]
         torch.save(self.collate(complexes, self.max_dim), path)

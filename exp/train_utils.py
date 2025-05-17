@@ -34,24 +34,30 @@ def train(model, device, loader, optimizer, task_type='classification', ignore_u
     num_skips = 0
     for step, batch in enumerate(tqdm(loader, desc="Training iteration")):
         batch = batch.to(device)
+        if isinstance(batch, ComplexBatch):
+            num_samples = batch.cochains[0].x.size(0)
+            for dim in range(1, batch.dimension+1):
+                num_samples = min(num_samples, batch.cochains[dim].num_cells)
+        else:
+            # This is graph.
+            num_samples = batch.x.size(0)
 
-        # num_samples = min([sum(_l) for _l in batch.x_num_list]) if isinstance(batch, ComplexBatch) else batch.x.size(0)
+        if num_samples <= 1:
+            # Skip batch if it only comprises one sample (could cause problems with BN)
+            num_skips += 1
+            if float(num_skips) / len(loader) >= 0.25:
+                logging.warning("Warning! 25% of the batches were skipped this epoch")
+            continue
 
-        # if num_samples <= 1:
-        #     # Skip batch if it only comprises one sample (could cause problems with BN)
-        #     num_skips += 1
-        #     if float(num_skips) / len(loader) >= 0.25:
-        #         logging.warning("Warning! 25% of the batches were skipped this epoch")
-        #     continue
-
-        # # (DEBUG)
-        # if num_samples < 10:
-        #     logging.warning("Warning! BatchNorm applied on a batch " "with only {} samples".format(num_samples))
+        # (DEBUG)
+        if num_samples < 10:
+            logging.warning("Warning! BatchNorm applied on a batch "
+                            "with only {} samples".format(num_samples))
 
         optimizer.zero_grad()
         pred = model(batch)
         if isinstance(loss_fn, torch.nn.CrossEntropyLoss):
-            targets = batch.y.view(-1, )
+            targets = batch.y.view(-1,)
         else:
             targets = batch.y.to(torch.float32).view(pred.shape)
 
@@ -108,7 +114,8 @@ def eval(model, device, loader, evaluator, task_type):
         # Cast features to double precision if that is used
         if torch.get_default_dtype() == torch.float64:
             for dim in range(batch.dimension + 1):
-                batch.x_list[dim] = batch.x_list[dim].double()
+                batch.cochains[dim].x = batch.cochains[dim].x.double()
+                assert batch.cochains[dim].x.dtype == torch.float64, batch.cochains[dim].x.dtype
 
         batch = batch.to(device)
         with torch.no_grad():
@@ -116,7 +123,7 @@ def eval(model, device, loader, evaluator, task_type):
 
             if task_type != 'isomorphism':
                 if isinstance(loss_fn, torch.nn.CrossEntropyLoss):
-                    targets = batch.y.view(-1, )
+                    targets = batch.y.view(-1,)
                     y_true.append(batch.y.detach().cpu())
                 else:
                     targets = batch.y.to(torch.float32).view(pred.shape)
@@ -138,6 +145,7 @@ def eval(model, device, loader, evaluator, task_type):
 
 
 class Evaluator(object):
+
     def __init__(self, metric, **kwargs):
         if metric == 'isomorphism':
             self.eval_fn = self._isomorphism
@@ -147,6 +155,12 @@ class Evaluator(object):
             self.eval_fn = self._accuracy
         elif metric == 'mae':
             self.eval_fn = self._mae
+        elif metric == 'mse':
+            self.eval_fn = self._mse
+        elif metric == 'ogb_f1':
+            self.eval_fn = self._ogb_f1
+        elif metric == 'f1':
+            self.eval_fn = self._f1
         elif metric.startswith('ogbg-mol'):
             self._ogb_evaluator = OGBEvaluator(metric)
             self._key = self._ogb_evaluator.eval_metric
@@ -182,6 +196,31 @@ class Evaluator(object):
         assert y_true is not None
         assert y_pred is not None
         metric = met.mean_absolute_error(y_true, y_pred)
+        return metric
+
+    def _mse(self, input_dict, **kwargs):
+        y_true = input_dict['y_true']
+        y_pred = input_dict['y_pred']
+        assert y_true is not None
+        assert y_pred is not None
+        metric = met.mean_squared_error(y_true, y_pred)
+        return metric
+
+    def _ogb_f1(self, input_dict, **kwargs):
+        y_true = input_dict['y_true']
+        y_pred = input_dict['y_pred'] * 0
+        y_pred[input_dict['y_pred'] > 0.5] = 1
+        assert y_true is not None
+        assert y_pred is not None
+        metric = met.f1_score(y_true, y_pred, average='weighted')
+        return metric
+
+    def _f1(self, input_dict, **kwargs):
+        y_true = input_dict['y_true']
+        y_pred = np.argmax(input_dict['y_pred'], axis=1)
+        assert y_true is not None
+        assert y_pred is not None
+        metric = met.f1_score(y_true, y_pred)
         return metric
 
     def _ogb(self, input_dict, **kwargs):

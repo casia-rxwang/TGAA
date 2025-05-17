@@ -18,7 +18,10 @@ warnings.filterwarnings('ignore')
 def main(args):
     """The common training and evaluation script used by all the experiments."""
     # set device
-    device = torch.device("cuda:" + str(args.device)) if torch.cuda.is_available() else torch.device("cpu")
+    if torch.cuda.is_available() and args.device >= 0:
+        device = torch.device("cuda:" + str(args.device))
+    else:
+        device = torch.device("cpu")
 
     print("==========================================================")
     print("Using device", str(device))
@@ -44,7 +47,7 @@ def main(args):
         torch.set_default_dtype(torch.float64)
 
     # Create results folder
-    result_folder = os.path.join(args.result_folder, f'{args.dataset}-{args.exp_name}', f'seed-{args.seed}')
+    result_folder = os.path.join(args.result_folder, f'{args.dataset}', f'{args.exp_name}', f'seed-{args.seed}')
     if args.fold is not None:
         result_folder = os.path.join(result_folder, f'fold-{args.fold}')
     if not os.path.exists(result_folder):
@@ -104,7 +107,7 @@ def main(args):
     total_params = 0
     for name, param in model.named_parameters():
         names.append(name)
-        params.append(param.data.detach().mean().item())
+        params.append(param.data.detach().clone())
         if param.requires_grad:
             print(name, param.size())
             trainable_params += param.numel()
@@ -131,9 +134,7 @@ def main(args):
 
             # evaluate model
             print('Evaluating...')
-            # NOTICE, eval() will load train data and change following random batch
-            # if epoch % args.train_eval_period == 0:
-            if epoch == start_epoch or (epoch + 1) % args.train_eval_period == 0:
+            if epoch % args.train_eval_period == 0:
                 train_perf, _ = eval(model, device, train_loader, evaluator, args.task_type)
             train_curve.append(train_perf)
 
@@ -174,9 +175,7 @@ def main(args):
 
             new_params = []
             for name, param in model.named_parameters():
-                # print(f"Param {name}: {param.data.view(-1)[0]}")
-                # new_params.append(param.data.detach().clone().view(-1)[0])
-                new_params.append(param.data.detach().mean().item())
+                new_params.append(param.data.detach().clone())
 
             if epoch % args.train_eval_period == 0:
                 # save last model
@@ -186,8 +185,9 @@ def main(args):
 
                 print("====== Slowly changing params ======= ")
                 for i in range(len(names)):
-                    if abs(params[i] - new_params[i]) < 1e-6:
-                        print(f"Param {names[i]}: {params[i] - new_params[i]}")
+                    diff = torch.abs(params[i] - new_params[i]).mean().item()
+                    if diff < 1e-6:
+                        print(f"Param {names[i]}: {diff}")
 
             params = new_params
     else:
@@ -256,11 +256,13 @@ def eval_mode(args, model, device, train_loader, valid_loader, test_loader, eval
     final_train_perf = np.nan
     final_val_perf = np.nan
     final_test_perf = np.nan
-    if not args.dataset.startswith('sr'):
-        final_train_perf, _ = eval(model, device, train_loader, evaluator, args.task_type)
-        final_val_perf, _ = eval(model, device, valid_loader, evaluator, args.task_type)
+    # if not args.dataset.startswith('sr'):
+    #     final_train_perf, _ = eval(model, device, train_loader, evaluator, args.task_type)
+    #     final_val_perf, _ = eval(model, device, valid_loader, evaluator, args.task_type)
     if test_loader is not None:
         final_test_perf, _ = eval(model, device, test_loader, evaluator, args.task_type)
+    else:
+        final_val_perf, _ = eval(model, device, valid_loader, evaluator, args.task_type)
 
     curves = {
         'train_loss': [np.nan],

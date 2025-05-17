@@ -36,40 +36,36 @@ class CochainMessagePassingParams:
 
     This object stores the equivalent of the `x` and `edge_index` objects from PyTorch Geometric.
     """
-    def __init__(self, batch_size: int, x: Tensor, x_num: List, x_batch: Tensor, x_index: Tensor, boundary_index: Tensor,
-                 up_index: Tensor, shared_coboundaries: Tensor, down_index: Tensor, shared_boundaries: Tensor, **kwargs):
+    def __init__(self, batch_size: int, x: Tensor, batch: Tensor, cum_num: Tensor, boundary_index: Tensor,
+                 boundary_attr: Tensor, up_index: Tensor, up_attr: Tensor, shared_coboundaries: Tensor, down_index: Tensor,
+                 down_attr: Tensor, shared_boundaries: Tensor):
+
         self.batch_size = batch_size
-        self.x_num = x_num
-        self.max_num = max(x_num)  # x_num must not be None
-        self.x_batch = x_batch
+        self.cum_num = cum_num
+        self.num = cum_num[1:] - cum_num[:-1]
+        self.max_num = self.num.max()
+        self.batch = batch
 
         self.x = x
-        self.x_idx = x_index[0], x_index[1]  # x_index must not be None
-        self.x_mask = None
 
         self.boundary_index = boundary_index
-        self.boundary_adj = None
-        self.boundary_attr = None
-        self.boundary_attr_mask = None
-        self.boundary_attr_idx = None
+        self.boundary_attr = boundary_attr
 
         self.up_index = up_index
+        self.up_attr = up_attr
         self.shared_coboundaries = shared_coboundaries
-        self.up_adj = None
-        self.up_x_i_idx = None
-        self.up_x_j_idx = None
-        self.up_attr_idx = None
-        self.up_attr = None
 
         self.down_index = down_index
+        self.down_attr = down_attr
         self.shared_boundaries = shared_boundaries
-        self.down_adj = None
-        self.down_x_i_idx = None
-        self.down_x_j_idx = None
-        self.down_attr_idx = None
-        self.down_attr = None
 
-        self.kwargs = kwargs
+        # for cin model
+        self.kwargs = {
+            'up_attr': up_attr,
+            'down_attr': down_attr,
+            'boundary_attr': boundary_attr,
+            'boundary_index': boundary_index
+        }
 
 
 class Cochain(object):
@@ -664,7 +660,7 @@ class Complex(object):
         return key in self.keys
 
 
-class ComplexBatch(object):
+class ComplexBatch(Complex):
     """Class representing a batch of cochain complexes.
 
     This is stored as a single cochain complex formed of batched cochains.
@@ -675,24 +671,10 @@ class ComplexBatch(object):
         y: A tensor of labels for the complexes in the batch.
         num_complexes: The number of complexes in the batch.
     """
-    def __init__(self, dimension: int, num_complexes: int, x_list: List[Tensor], x_num_list: List[List],
-                 x_batch_list: List[Tensor], x_index_list: List[Tensor], boundary_index_list: List[Tensor],
-                 upper_index_list: List[Tensor], shared_coboundaries_list: List[Tensor], lower_index_list: List[Tensor],
-                 shared_boundaries_list: List[Tensor], y: Tensor):
-
-        self.dimension = dimension
+    def __init__(self, *cochains: CochainBatch, dimension: int, y: torch.Tensor = None, num_complexes: int = None):
+        super(ComplexBatch, self).__init__(*cochains, y=y)
         self.num_complexes = num_complexes
-        self.y = y
-
-        self.x_list = x_list
-        self.x_num_list = x_num_list
-        self.x_batch_list = x_batch_list
-        self.x_index_list = x_index_list
-        self.boundary_index_list = boundary_index_list
-        self.upper_index_list = upper_index_list
-        self.lower_index_list = lower_index_list
-        self.shared_coboundaries_list = shared_coboundaries_list
-        self.shared_boundaries_list = shared_boundaries_list
+        self.dimension = dimension
 
     @classmethod
     def from_complex_list(cls, data_list: List[Complex], follow_batch=[], max_dim: int = 2):
@@ -706,142 +688,121 @@ class ComplexBatch(object):
         Returns:
             A ComplexBatch object.
         """
-        # ts = time.time()
+
         dimension = max([data.dimension for data in data_list])
         dimension = min(dimension, max_dim)
-
-        # y
+        cochains = [list() for _ in range(dimension + 1)]
         label_list = list()
         per_complex_labels = True
         for comp in data_list:
+            for dim in range(dimension + 1):
+                if dim not in comp.cochains:
+                    # If a dim-cochain is not present for the current complex, we instantiate one.
+                    cochains[dim].append(Cochain(dim=dim))
+                    if dim - 1 in comp.cochains:
+                        # If the cochain below exists in the complex, we need to add the number of
+                        # boundaries to the newly initialised complex, otherwise batching will not work.
+                        cochains[dim][-1].num_cells_down = comp.cochains[dim - 1].num_cells
+                else:
+                    cochains[dim].append(comp.cochains[dim])
             per_complex_labels &= comp.y is not None
             if per_complex_labels:
                 label_list.append(comp.y)
 
+        batched_cochains = [
+            CochainBatch.from_cochain_list(cochain_list, follow_batch=follow_batch) for cochain_list in cochains
+        ]
         y = None if not per_complex_labels else torch.cat(label_list, 0)
+        batch = cls(*batched_cochains, y=y, num_complexes=len(data_list), dimension=dimension)
 
-        # x, adj
-        x_lists = [list() for _ in range(dimension + 1)]  # list of cells list
-        x_num_lists = [list() for _ in range(dimension + 1)]  # # list of cells num list
-        x_batch_lists = [list() for _ in range(dimension + 1)]  # list of cells batch idx
-        x_index_lists = [list() for _ in range(dimension + 1)]
-        boundary_index_lists = [list() for _ in range(dimension + 1)]
-        upper_index_lists = [list() for _ in range(dimension + 1)]
-        shared_coboundaries_lists = [list() for _ in range(dimension + 1)]
-        lower_index_lists = [list() for _ in range(dimension + 1)]
-        shared_boundaries_lists = [list() for _ in range(dimension + 1)]
-        for i, comp in enumerate(data_list):
-            for dim in range(dimension + 1):
-                if dim in comp.cochains:
-                    num_cells = comp.cochains[dim].num_cells
-                    assert num_cells > 0
-                    x_num_lists[dim].append(num_cells)
-                    x_batch_lists[dim] += [i] * num_cells
+        return batch
 
-                    idx1 = torch.arange(num_cells, dtype=torch.long)
-                    idx0 = idx1.new_full(idx1.size(), i)
-                    idx = torch.stack((idx0, idx1), dim=0)
-                    x_index_lists[dim].append(idx)
+    def get_cochain_params(self,
+                           dim: int,
+                           max_dim: int = 2,
+                           include_top_features=True,
+                           include_down_features=True,
+                           include_boundary_features=True) -> CochainMessagePassingParams:
+        """
+        Conveniently constructs all necessary input parameters to perform higher-dim
+        message passing on the cochain of specified `dim`.
 
-                    if comp.cochains[dim].boundary_index is not None:
-                        idx1 = comp.cochains[dim].boundary_index[1]
-                        idx2 = comp.cochains[dim].boundary_index[0]
-                        idx0 = idx1.new_full(idx1.size(), i)
-                        idx = torch.stack((idx0, idx1, idx2), dim=0)
-                        boundary_index_lists[dim].append(idx)
+        Args:
+            dim: The dimension from which to extract the parameters
+            max_dim: The maximum dimension of interest.
+                This is only used in conjunction with include_top_features.
+            include_top_features: Whether to include the top features from level max_dim+1.
+            include_down_features: Include the features for down adjacency
+            include_boundary_features: Include the features for the boundary
+        Returns:
+            An object of type CochainMessagePassingParams
+        """
+        if dim in self.cochains:
+            cells = self.cochains[dim]  # CochainBatch
+            x = cells.x
 
-                    if comp.cochains[dim].upper_index is not None:
-                        idx1 = comp.cochains[dim].upper_index[1]
-                        idx2 = comp.cochains[dim].upper_index[0]
-                        idx0 = idx1.new_full(idx1.size(), i)
-                        idx = torch.stack((idx0, idx1, idx2), dim=0)
-                        upper_index_lists[dim].append(idx)
+            # Add up features
+            upper_index, upper_features = None, None
+            # We also check that dim+1 does exist in the current complex. This cochain might have been
+            # extracted from a higher dimensional complex by a batching operation, and dim+1
+            # might not exist anymore even though cells.upper_index is present.
+            if cells.upper_index is not None and (dim + 1) in self.cochains:
+                upper_index = cells.upper_index
+                if self.cochains[dim + 1].x is not None and (dim < max_dim or include_top_features):
+                    upper_features = torch.index_select(self.cochains[dim + 1].x, 0, self.cochains[dim].shared_coboundaries)
 
-                        shared_coboundaries_lists[dim].append(comp.cochains[dim].shared_coboundaries)
+            # Add down features
+            lower_index, lower_features = None, None
+            if include_down_features and cells.lower_index is not None:
+                lower_index = cells.lower_index
+                if dim > 0 and self.cochains[dim - 1].x is not None:
+                    lower_features = torch.index_select(self.cochains[dim - 1].x, 0, self.cochains[dim].shared_boundaries)
 
-                    if comp.cochains[dim].lower_index is not None:
-                        idx1 = comp.cochains[dim].lower_index[1]
-                        idx2 = comp.cochains[dim].lower_index[0]
-                        idx0 = idx1.new_full(idx1.size(), i)
-                        idx = torch.stack((idx0, idx1, idx2), dim=0)
-                        lower_index_lists[dim].append(idx)
+            # Add boundary features
+            boundary_index, boundary_features = None, None
+            if include_boundary_features and cells.boundary_index is not None:
+                boundary_index = cells.boundary_index
+                if dim > 0 and self.cochains[dim - 1].x is not None:
+                    boundary_features = self.cochains[dim - 1].x
 
-                        shared_boundaries_lists[dim].append(comp.cochains[dim].shared_boundaries)
+            inputs = CochainMessagePassingParams(batch_size=self.num_complexes,
+                                                 x=x,
+                                                 batch=cells.batch,
+                                                 cum_num=cells.ptr,
+                                                 boundary_index=boundary_index,
+                                                 boundary_attr=boundary_features,
+                                                 up_index=upper_index,
+                                                 up_attr=upper_features,
+                                                 shared_coboundaries=cells.shared_coboundaries,
+                                                 down_index=lower_index,
+                                                 down_attr=lower_features,
+                                                 shared_boundaries=cells.shared_boundaries)
+        else:
+            raise NotImplementedError('Dim {} is not present in the complex or not yet supported.'.format(dim))
+        return inputs
 
-                    if comp.cochains[dim].x is not None:
-                        x_lists[dim].append(comp.cochains[dim].x)
-                else:
-                    x_num_lists[dim].append(0)
-
-        # x_num_list = [torch.tensor(_l, dtype=torch.long) for _l in x_num_lists]
-
-        x_list = [torch.cat(_l, 0) if len(_l) > 0 else None for _l in x_lists]
-        x_batch_list = [torch.tensor(_l, dtype=torch.long) if len(_l) > 0 else None for _l in x_batch_lists]
-        x_index_list = [torch.cat(_l, -1) if len(_l) > 0 else None for _l in x_index_lists]
-        boundary_index_list = [torch.cat(_l, -1) if len(_l) > 0 else None for _l in boundary_index_lists]
-        upper_index_list = [torch.cat(_l, -1) if len(_l) > 0 else None for _l in upper_index_lists]
-        lower_index_list = [torch.cat(_l, -1) if len(_l) > 0 else None for _l in lower_index_lists]
-        shared_coboundaries_list = [torch.cat(_l, -1) if len(_l) > 0 else None for _l in shared_coboundaries_lists]
-        shared_boundaries_list = [torch.cat(_l, -1) if len(_l) > 0 else None for _l in shared_boundaries_lists]
-
-        # print('batch: {:.4f}'.format(time.time() - ts))
-        return cls(dimension=dimension,
-                   num_complexes=len(data_list),
-                   x_list=x_list,
-                   x_num_list=x_num_lists,
-                   x_batch_list=x_batch_list,
-                   x_index_list=x_index_list,
-                   boundary_index_list=boundary_index_list,
-                   upper_index_list=upper_index_list,
-                   shared_coboundaries_list=shared_coboundaries_list,
-                   lower_index_list=lower_index_list,
-                   shared_boundaries_list=shared_boundaries_list,
-                   y=y)
-
-    def to(self, device, **kwargs):
-        """Performs tensor dtype and/or device conversion to cochains and label y, if set."""
-        # TODO: handle device conversion for specific attributes via `*keys` parameter
-
-        self.y = None if self.y is None else self.y.to(device, **kwargs)
-
-        # self.x_num_list = [_t.to(device, **kwargs) for _t in self.x_num_list]
-
-        self.x_list = [_t if _t is None else _t.to(device, **kwargs) for _t in self.x_list]
-        self.x_batch_list = [_t if _t is None else _t.to(device, **kwargs) for _t in self.x_batch_list]
-        self.x_index_list = [_t if _t is None else _t.to(device, **kwargs) for _t in self.x_index_list]
-        self.boundary_index_list = [_t if _t is None else _t.to(device, **kwargs) for _t in self.boundary_index_list]
-        self.upper_index_list = [_t if _t is None else _t.to(device, **kwargs) for _t in self.upper_index_list]
-        self.shared_coboundaries_list = [_t if _t is None else _t.to(device, **kwargs) for _t in self.shared_coboundaries_list]
-        self.lower_index_list = [_t if _t is None else _t.to(device, **kwargs) for _t in self.lower_index_list]
-        self.shared_boundaries_list = [_t if _t is None else _t.to(device, **kwargs) for _t in self.shared_boundaries_list]
-
-        return self
-
-    def get_all_cochain_params(self, max_dim: int = 2) -> List[CochainMessagePassingParams]:
+    def get_all_cochain_params(self,
+                               max_dim: int = 2,
+                               include_top_features=True,
+                               include_down_features=True,
+                               include_boundary_features=True) -> List[CochainMessagePassingParams]:
         """Extracts the cochain parameters for message passing on the cochains up to max_dim.
 
         Args:
             max_dim: The maximum dimension of the complex for which to extract the parameters.
+            include_top_features: Whether to include the features from level max_dim+1.
+            include_down_features: Include the features for down adjacent cells.
+            include_boundary_features: Include the features for the boundary cells.
         Returns:
             A list of elements of type CochainMessagePassingParams.
         """
         all_params = []
         return_dim = min(max_dim, self.dimension)
         for dim in range(return_dim + 1):
-            x = self.x_list[dim]
-            x_num = self.x_num_list[dim]
-            x_batch = self.x_batch_list[dim]
-            x_index = self.x_index_list[dim]
-            batch_size = self.num_complexes
-
-            boundary_index = self.boundary_index_list[dim]
-            upper_index = self.upper_index_list[dim]
-            shared_coboundaries = self.shared_coboundaries_list[dim]
-            lower_index = self.lower_index_list[dim]
-            shared_boundaries = self.shared_boundaries_list[dim]
-
-            param = CochainMessagePassingParams(batch_size, x, x_num, x_batch, x_index, boundary_index, upper_index,
-                                                shared_coboundaries, lower_index, shared_boundaries)
-            all_params.append(param)
-
+            all_params.append(
+                self.get_cochain_params(dim,
+                                        max_dim=max_dim,
+                                        include_top_features=include_top_features,
+                                        include_down_features=include_down_features,
+                                        include_boundary_features=include_boundary_features))
         return all_params

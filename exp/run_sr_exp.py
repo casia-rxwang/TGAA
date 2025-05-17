@@ -1,17 +1,15 @@
 import os
 import sys
 import copy
-import time
 import numpy as np
 import subprocess
 
-from definitions import ROOT_DIR
 from exp.parser import get_parser
 from exp.run_exp import main
 
 # python3 -m exp.run_sr_exp --task_type isomorphism --eval_metric isomorphism --untrained --model sparse_cin --nonlinearity id --emb_dim 16 --readout sum --num_layers 5
 # python3 -m exp.run_sr_exp --task_type isomorphism --eval_metric isomorphism --untrained --model gin --nonlinearity id --emb_dim 16 --readout sum --num_layers 5
-#--jump_mode None
+# --jump_mode None
 
 __families__ = ['sr16622', 'sr251256', 'sr261034', 'sr281264', 'sr291467', 'sr351668', 'sr351899', 'sr361446', 'sr401224']
 
@@ -77,13 +75,11 @@ if __name__ == "__main__":
                 '-----------------------------------------------\n')
     print(msg)
 
-    if args.exp_mode == 'eval':
-        # not save results
-        exit()
+    suffix = 'result_eval.txt' if args.exp_mode == 'eval' else 'result.txt'
 
     # additionally write msg and configuration on file
     msg += str(args)
-    filename = os.path.join(result_folder, 'result.txt')
+    filename = os.path.join(result_folder, suffix)
     print('Writing results at: {}'.format(filename))
     with open(filename, 'w') as handle:
         handle.write(msg)
